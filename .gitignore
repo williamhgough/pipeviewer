@@ -1,1 +1,6 @@
 /target
+.vscode
+**/*.rs.bk
+
+# if library, add this:
+# Cargo.lock
