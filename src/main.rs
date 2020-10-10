@@ -1,46 +1,33 @@
-use std::env;
-use std::io::{self, ErrorKind, Read, Result, Write};
-
-/// CHUNK_SIZE is an arbitrary chunk size for the buffer.
-const CHUNK_SIZE: usize = 16 * 1024; // 16Kb
+use pipeviewer::{args::Args, read, stats, write};
+use std::io::Result;
+use std::sync::mpsc;
+use std::thread;
 
 fn main() -> Result<()> {
-    // Let the user decide if progress output should show
-    let silent = !env::var("PV_SILENT").unwrap_or_default().is_empty();
-    // keep track of total bytes written
-    let mut total_bytes = 0;
-    let mut buffer = [0; CHUNK_SIZE];
+    let args = Args::parse();
+    let Args {
+        infile,
+        outfile,
+        silent,
+    } = args;
 
-    loop {
-        let num_read = match io::stdin().read(&mut buffer) {
-            // If we get 0, we're done, break.
-            Ok(0) => break,
-            // If we get any other number, we're not done, return it.
-            Ok(x) => x,
-            // If we get an error reading, just bail for now.
-            Err(_) => break,
-        };
-        // update total_bytes written.
-        total_bytes += num_read;
-        if !silent {
-            eprint!("\r{}", total_bytes);
-        }
+    let (stats_tx, stats_rx) = mpsc::channel::<Vec<u8>>();
+    let (writer_tx, writer_rx) = mpsc::channel::<Vec<u8>>();
 
-        // Since we're returning io::Result we could use the ? operator
-        // but since we don't want to error for BrokenPipe, we have to explicitly
-        // check for it and handle it.
-        if let Err(e) = io::stdout().write_all(&buffer[..num_read]) {
-            if e.kind() == ErrorKind::BrokenPipe {
-                break;
-            }
-            return Err(e);
-        }
-    }
+    let read_handle = thread::spawn(move || read::read_loop(&infile, stats_tx));
+    let stats_handle = thread::spawn(move || stats::stats_loop(silent, stats_rx, writer_tx));
+    let write_handle = thread::spawn(move || write::write_loop(&outfile, writer_rx));
 
-    // only print out progress is user specified they want to see it
-    if !silent {
-        eprintln!("\r{}", total_bytes);
-    }
+    // crash main thread if any threads crash
+    // `.join()` returns a `thread::Result<io::Result<()>>`
+    let read_io_result = read_handle.join().unwrap();
+    let stats_io_result = stats_handle.join().unwrap();
+    let write_io_result = write_handle.join().unwrap();
+
+    // return error if any
+    read_io_result?;
+    stats_io_result?;
+    write_io_result?;
 
     Ok(())
 }
